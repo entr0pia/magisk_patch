@@ -2,8 +2,8 @@
 # Magisk General Utility Functions
 ############################################
 
-MAGISK_VER='23.0'
-MAGISK_VER_CODE=23000
+MAGISK_VER='ea75a09f'
+MAGISK_VER_CODE=23011
 
 ###################
 # Helper Functions
@@ -125,11 +125,11 @@ ensure_bb() {
   fi
   chmod 755 $bb
 
-  # Busybox could be a script, make sure /usr/bin/sh exists
-  if [ ! -f /usr/bin/sh ]; then
+  # Busybox could be a script, make sure /system/bin/sh exists
+  if [ ! -f /system/bin/sh ]; then
     umount -l /system 2>/dev/null
     mkdir -p /system/bin
-    ln -s $(command -v sh) /usr/bin/sh
+    ln -s $(command -v sh) /system/bin/sh
   fi
 
   export ASH_STANDALONE=1
@@ -520,17 +520,25 @@ remove_system_su() {
 
 api_level_arch_detect() {
   API=$(grep_get_prop ro.build.version.sdk)
-  ABI=$(grep_get_prop ro.product.cpu.abi | cut -c-3)
-  ABI2=$(grep_get_prop ro.product.cpu.abi2 | cut -c-3)
-  ABILONG=$(grep_get_prop ro.product.cpu.abi)
-
-  ARCH=arm
-  ARCH32=arm
-  IS64BIT=false
-  if [ "$ABI" = "x86" ]; then ARCH=x86; ARCH32=x86; fi;
-  if [ "$ABI2" = "x86" ]; then ARCH=x86; ARCH32=x86; fi;
-  if [ "$ABILONG" = "arm64-v8a" ]; then ARCH=arm64; ARCH32=arm; IS64BIT=true; fi;
-  if [ "$ABILONG" = "x86_64" ]; then ARCH=x64; ARCH32=x86; IS64BIT=true; fi;
+  ABI=$(grep_get_prop ro.product.cpu.abi)
+  if [ "$ABI" = "x86" ]; then
+    ARCH=x86
+    ABI32=x86
+    IS64BIT=false
+  elif [ "$ABI" = "arm64-v8a" ]; then
+    ARCH=arm64
+    ABI32=armeabi-v7a
+    IS64BIT=true
+  elif [ "$ABI" = "x86_64" ]; then
+    ARCH=x64
+    ABI32=x86
+    IS64BIT=true
+  else
+    ARCH=arm
+    ABI=armeabi-v7a
+    ABI32=armeabi-v7a
+    IS64BIT=false
+  fi
 }
 
 check_data() {
@@ -621,7 +629,15 @@ copy_sepolicy_rules() {
   elif grep -q ' /mnt/vendor/persist ' /proc/mounts; then
     RULESDIR=/mnt/vendor/persist/magisk
   else
-    return
+    ui_print "- Unable to find sepolicy rules dir"
+    return 1
+  fi
+
+  if [ -d ${RULESDIR%/magisk} ]; then
+    ui_print "- Sepolicy rules dir is ${RULESDIR%/magisk}"
+  else
+    ui_print "- Sepolicy rules dir ${RULESDIR%/magisk} not found"
+    return 1
   fi
 
   # Copy all enabled sepolicy.rule
@@ -758,6 +774,8 @@ install_module() {
   if $BOOTMODE; then
     # Update info for Magisk app
     mktouch $NVBASE/modules/$MODID/update
+    rm -rf $NVBASE/modules/$MODID/remove 2>/dev/null
+    rm -rf $NVBASE/modules/$MODID/disable 2>/dev/null
     cp -af $MODPATH/module.prop $NVBASE/modules/$MODID/module.prop
   fi
 
