@@ -1,6 +1,6 @@
 # Magisk Boot Image Patcher
 
-Forked from [topjohnwu/Magisk:/scripts](https://github.com/topjohnwu/Magisk/tree/master/scripts), Magisk v24.3
+Forked from [topjohnwu/Magisk:/scripts](https://github.com/topjohnwu/Magisk/tree/v25.1/scripts), Magisk v25.1
 
 
 ## Usage
@@ -18,7 +18,7 @@ boot_patch.sh <bootimage>
 
 | File name         | Type   | Description                                                                  |
 | ----------------- | ------ | ---------------------------------------------------------------------------- |
-| boot_patch.sh     | script | A script to patch boot image for Magisk.                                     |
+| boot_patch.sh     | script | A script to patch boot image for Magisk                                      |
 | util_functions.sh | script | A script which hosts all functions required for this script to work properly |
 | magiskinit        | binary | The binary to replace /init                                                  |
 | magisk(32/64)     | binary | The magisk binaries                                                          |
