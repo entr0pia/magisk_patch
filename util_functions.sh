@@ -2,8 +2,8 @@
 # Magisk General Utility Functions
 ############################################
 
-MAGISK_VER='25.2'
-MAGISK_VER_CODE=25200
+MAGISK_VER='26.1'
+MAGISK_VER_CODE=26100
 
 ###################
 # Helper Functions
@@ -50,7 +50,7 @@ getvar() {
   local VARNAME=$1
   local VALUE
   local PROPPATH='/data/.magisk /cache/.magisk'
-  [ ! -z $MAGISKTMP ] && PROPPATH="$MAGISKTMP/config $PROPPATH"
+  [ ! -z $MAGISKTMP ] && PROPPATH="$MAGISKTMP/.magisk/config $PROPPATH"
   VALUE=$(grep_prop $VARNAME $PROPPATH)
   [ ! -z $VALUE ] && eval $VARNAME=\$VALUE
 }
@@ -269,12 +269,13 @@ mount_partitions() {
     SLOT=`grep_cmdline androidboot.slot`
     [ -z $SLOT ] || SLOT=_${SLOT}
   fi
+  [ "$SLOT" = "normal" ] && unset SLOT
   [ -z $SLOT ] || ui_print "- Current boot slot: $SLOT"
 
   # Mount ro partitions
   if is_mounted /system_root; then
-    umount /system 2&>/dev/null
-    umount /system_root 2&>/dev/null
+    umount /system 2>/dev/null
+    umount /system_root 2>/dev/null
   fi
   mount_ro_ensure "system$SLOT app$SLOT" /system
   if [ -f /system/init -o -L /system/init ]; then
@@ -296,13 +297,6 @@ mount_partitions() {
 
   # Allow /system/bin commands (dalvikvm) on Android 10+ in recovery
   $BOOTMODE || mount_apex
-
-  # Mount sepolicy rules dir locations in recovery (best effort)
-  if ! $BOOTMODE; then
-    mount_name "cache cac" /cache
-    mount_name metadata /metadata
-    mount_name persist /persist
-  fi
 }
 
 # loop_setup <ext4_img>, sets LOOPDEV
@@ -336,7 +330,7 @@ mount_apex() {
       [ -f /apex/original_apex ] && APEX=/apex/original_apex # unzip doesn't do return codes
       # APEX APKs, extract and loop mount
       unzip -qo $APEX apex_payload.img -d /apex
-      DEST=$(unzip -qp $APEX apex_manifest.pb | strings | head -n 1)
+      DEST=$(unzip -qp $APEX apex_manifest.pb | strings | head -n 1 | tr -dc '[:alnum:].-_\n')
       [ -z $DEST ] && DEST=$(unzip -qp $APEX apex_manifest.json | sed -n $PATTERN)
       [ -z $DEST ] && continue
       DEST=/apex/$DEST
@@ -352,7 +346,7 @@ mount_apex() {
       if [ -f $APEX/apex_manifest.json ]; then
         DEST=/apex/$(sed -n $PATTERN $APEX/apex_manifest.json)
       elif [ -f $APEX/apex_manifest.pb ]; then
-        DEST=/apex/$(strings $APEX/apex_manifest.pb | head -n 1)
+        DEST=/apex/$(strings $APEX/apex_manifest.pb | head -n 1 | tr -dc '[:alnum:].-_\n')
       else
         continue
       fi
@@ -514,34 +508,39 @@ sign_chromeos() {
 }
 
 remove_system_su() {
-  if [ -f /system/bin/su -o -f /system/xbin/su ] && [ ! -f /su/bin/su ]; then
+  [ -d /postinstall/tmp ] && POSTINST=/postinstall
+  cd $POSTINST/system
+  if [ -f bin/su -o -f xbin/su ] && [ ! -f /su/bin/su ]; then
     ui_print "- Removing system installed root"
     blockdev --setrw /dev/block/mapper/system$SLOT 2>/dev/null
-    mount -o rw,remount /system
+    mount -o rw,remount $POSTINST/system
     # SuperSU
-    if [ -e /system/bin/.ext/.su ]; then
-      mv -f /system/bin/app_process32_original /system/bin/app_process32 2>/dev/null
-      mv -f /system/bin/app_process64_original /system/bin/app_process64 2>/dev/null
-      mv -f /system/bin/install-recovery_original.sh /system/bin/install-recovery.sh 2>/dev/null
-      cd /system/bin
+    cd bin
+    if [ -e .ext/.su ]; then
+      mv -f app_process32_original app_process32 2>/dev/null
+      mv -f app_process64_original app_process64 2>/dev/null
+      mv -f install-recovery_original.sh install-recovery.sh 2>/dev/null
       if [ -e app_process64 ]; then
         ln -sf app_process64 app_process
       elif [ -e app_process32 ]; then
         ln -sf app_process32 app_process
       fi
     fi
-    rm -rf /system/.pin /system/bin/.ext /system/etc/.installed_su_daemon /system/etc/.has_su_daemon \
-    /system/xbin/daemonsu /system/xbin/su /system/xbin/sugote /system/xbin/sugote-mksh /system/xbin/supolicy \
-    /system/bin/app_process_init /system/bin/su /cache/su /system/lib/libsupol.so /system/lib64/libsupol.so \
-    /system/su.d /system/etc/install-recovery.sh /system/etc/init.d/99SuperSUDaemon /cache/install-recovery.sh \
-    /system/.supersu /cache/.supersu /data/.supersu \
-    /system/app/Superuser.apk /system/app/SuperSU /cache/Superuser.apk
-  elif [ -f /cache/su.img -o -f /data/su.img -o -d /data/adb/su -o -d /data/su ]; then
+    # More SuperSU, SuperUser & ROM su
+    cd ..
+    rm -rf .pin bin/.ext etc/.installed_su_daemon etc/.has_su_daemon \
+    xbin/daemonsu xbin/su xbin/sugote xbin/sugote-mksh xbin/supolicy \
+    bin/app_process_init bin/su /cache/su lib/libsupol.so lib64/libsupol.so \
+    su.d etc/init.d/99SuperSUDaemon etc/install-recovery.sh /cache/install-recovery.sh \
+    .supersu /cache/.supersu /data/.supersu \
+    app/Superuser.apk app/SuperSU /cache/Superuser.apk
+  elif [ -f /cache/su.img -o -f /data/su.img -o -d /data/su -o -d /data/adb/su ]; then
     ui_print "- Removing systemless installed root"
     umount -l /su 2>/dev/null
-    rm -rf /cache/su.img /data/su.img /data/adb/su /data/adb/suhide /data/su /cache/.supersu /data/.supersu \
-    /cache/supersu_install /data/supersu_install
+    rm -rf /cache/su.img /data/su.img /data/su /data/adb/su /data/adb/suhide \
+    /cache/.supersu /data/.supersu /cache/supersu_install /data/supersu_install
   fi
+  cd $TMPDIR
 }
 
 api_level_arch_detect() {
@@ -631,38 +630,15 @@ run_migrations() {
   done
 }
 
-copy_sepolicy_rules() {
-  # Remove all existing rule folders
-  rm -rf /data/unencrypted/magisk /cache/magisk /metadata/magisk /persist/magisk /mnt/vendor/persist/magisk
-
-  # Find current active RULESDIR
-  local RULESDIR
-  local ACTIVEDIR=$(magisk --path)/.magisk/mirror/sepolicy.rules
-  if [ -L $ACTIVEDIR ]; then
-    RULESDIR=$(readlink $ACTIVEDIR)
-    [ "${RULESDIR:0:1}" != "/" ] && RULESDIR="$(magisk --path)/.magisk/mirror/$RULESDIR"
-  elif ! $ISENCRYPTED; then
-    RULESDIR=$NVBASE/modules
-  elif [ -d /data/unencrypted ] && ! grep ' /data ' /proc/mounts | grep -qE 'dm-|f2fs'; then
-    RULESDIR=/data/unencrypted/magisk
-  elif grep ' /cache ' /proc/mounts | grep -q 'ext4' ; then
-    RULESDIR=/cache/magisk
-  elif grep ' /metadata ' /proc/mounts | grep -q 'ext4' ; then
-    RULESDIR=/metadata/magisk
-  elif grep ' /persist ' /proc/mounts | grep -q 'ext4' ; then
-    RULESDIR=/persist/magisk
-  elif grep ' /mnt/vendor/persist ' /proc/mounts | grep -q 'ext4' ; then
-    RULESDIR=/mnt/vendor/persist/magisk
-  else
-    ui_print "- Unable to find sepolicy rules dir"
+copy_preinit_files() {
+  local PREINITDIR=$(magisk --path)/.magisk/preinit
+  if ! grep -q " $PREINITDIR " /proc/mounts; then
+    ui_print "- Unable to find preinit dir"
     return 1
   fi
 
-  if [ -d ${RULESDIR%/magisk} ]; then
-    echo "RULESDIR=$RULESDIR" >&2
-  else
-    ui_print "- Unable to find sepolicy rules dir ${RULESDIR%/magisk}"
-    return 1
+  if ! grep -q "/adb/modules $PREINITDIR " /proc/self/mountinfo; then
+    rm -rf $PREINITDIR/*
   fi
 
   # Copy all enabled sepolicy.rule
@@ -671,9 +647,10 @@ copy_sepolicy_rules() {
     local MODDIR=${r%/*}
     [ -f $MODDIR/disable ] && continue
     [ -f $MODDIR/remove ] && continue
+    [ -f $MODDIR/update ] && continue
     local MODNAME=${MODDIR##*/}
-    mkdir -p $RULESDIR/$MODNAME
-    cp -f $r $RULESDIR/$MODNAME/sepolicy.rule
+    mkdir -p $PREINITDIR/$MODNAME
+    cp -f $r $PREINITDIR/$MODNAME/sepolicy.rule
   done
 }
 
@@ -812,7 +789,7 @@ install_module() {
   # Copy over custom sepolicy rules
   if [ -f $MODPATH/sepolicy.rule ]; then
     ui_print "- Installing custom sepolicy rules"
-    copy_sepolicy_rules
+    copy_preinit_files
   fi
 
   # Remove stuff that doesn't belong to modules and clean up any empty directories
