@@ -4,6 +4,7 @@ Forked from [topjohnwu/Magisk:/scripts](https://github.com/topjohnwu/Magisk/tree
 
 
 ## Usage
+Run it in `adb shell`, and *root* isn't needed.
 ```shell
 boot_patch.sh <bootimage>
 ```
