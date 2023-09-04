@@ -2,8 +2,25 @@
 # Magisk General Utility Functions
 ############################################
 
-MAGISK_VER='26.1'
-MAGISK_VER_CODE=26100
+MAGISK_VER='26.3'
+MAGISK_VER_CODE=26300
+
+###################
+# Global Variables
+###################
+
+# True if the script is running on booted Android, not something like recovery
+# BOOTMODE=
+
+# The path to store temporary files that don't need to persist
+# TMPDIR=
+
+# The path to store files that can be persisted (non-volatile storage)
+# Any modification to this variable should go through the function `set_nvbase`
+# NVBASE=
+
+# The non-volatile path where magisk executables are stored
+# MAGISKBIN=
 
 ###################
 # Helper Functions
@@ -68,10 +85,9 @@ abort() {
   exit 1
 }
 
-resolve_vars() {
-  MAGISKBIN=$NVBASE/magisk
-  POSTFSDATAD=$NVBASE/post-fs-data.d
-  SERVICED=$NVBASE/service.d
+set_nvbase() {
+  NVBASE="$1"
+  MAGISKBIN="$1/magisk"
 }
 
 print_title() {
@@ -97,7 +113,7 @@ setup_flashable() {
   $BOOTMODE && return
   if [ -z $OUTFD ] || readlink /proc/$$/fd/$OUTFD | grep -q /tmp; then
     # We will have to manually find out OUTFD
-    for FD in `ls /proc/$$/fd`; do
+    for FD in $(ls /proc/$$/fd); do
       if readlink /proc/$$/fd/$FD | grep -q pipe; then
         if ps | grep -v grep | grep -qE " 3 $FD |status_fd=$FD"; then
           OUTFD=$FD
@@ -170,7 +186,7 @@ recovery_actions() {
 recovery_cleanup() {
   local DIR
   ui_print "- Unmounting partitions"
-  (umount_apex
+  (
   if [ ! -d /postinstall/tmp ]; then
     umount -l /system
     umount -l /system_root
@@ -184,7 +200,8 @@ recovery_cleanup() {
       mv -f ${DIR}_link $DIR
     fi
   done
-  umount -l /dev/random) 2>/dev/null
+  umount -l /dev/random
+  ) 2>/dev/null
   [ -z $OLD_LD_LIB ] || export LD_LIBRARY_PATH=$OLD_LD_LIB
   [ -z $OLD_LD_PRE ] || export LD_PRELOAD=$OLD_LD_PRE
   [ -z $OLD_LD_CFG ] || export LD_CONFIG_FILE=$OLD_LD_CFG
@@ -198,7 +215,7 @@ recovery_cleanup() {
 find_block() {
   local BLOCK DEV DEVICE DEVNAME PARTNAME UEVENT
   for BLOCK in "$@"; do
-    DEVICE=`find /dev/block \( -type b -o -type c -o -type l \) -iname $BLOCK | head -n 1` 2>/dev/null
+    DEVICE=$(find /dev/block \( -type b -o -type c -o -type l \) -iname $BLOCK | head -n 1) 2>/dev/null
     if [ ! -z $DEVICE ]; then
       readlink -f $DEVICE
       return 0
@@ -206,8 +223,8 @@ find_block() {
   done
   # Fallback by parsing sysfs uevents
   for UEVENT in /sys/dev/block/*/uevent; do
-    DEVNAME=`grep_prop DEVNAME $UEVENT`
-    PARTNAME=`grep_prop PARTNAME $UEVENT`
+    DEVNAME=$(grep_prop DEVNAME $UEVENT)
+    PARTNAME=$(grep_prop PARTNAME $UEVENT)
     for BLOCK in "$@"; do
       if [ "$(toupper $BLOCK)" = "$(toupper $PARTNAME)" ]; then
         echo /dev/block/$DEVNAME
@@ -217,7 +234,7 @@ find_block() {
   done
   # Look just in /dev in case we're dealing with MTD/NAND without /dev/block devices/links
   for DEV in "$@"; do
-    DEVICE=`find /dev \( -type b -o -type c -o -type l \) -maxdepth 1 -iname $DEV | head -n 1` 2>/dev/null
+    DEVICE=$(find /dev \( -type b -o -type c -o -type l \) -maxdepth 1 -iname $DEV | head -n 1) 2>/dev/null
     if [ ! -z $DEVICE ]; then
       readlink -f $DEVICE
       return 0
@@ -262,11 +279,13 @@ mount_ro_ensure() {
   is_mounted $POINT || abort "! Cannot mount $POINT"
 }
 
+# After calling this method, the following variables will be set:
+# SLOT, SYSTEM_AS_ROOT
 mount_partitions() {
   # Check A/B slot
-  SLOT=`grep_cmdline androidboot.slot_suffix`
+  SLOT=$(grep_cmdline androidboot.slot_suffix)
   if [ -z $SLOT ]; then
-    SLOT=`grep_cmdline androidboot.slot`
+    SLOT=$(grep_cmdline androidboot.slot)
     [ -z $SLOT ] || SLOT=_${SLOT}
   fi
   [ "$SLOT" = "normal" ] && unset SLOT
@@ -279,7 +298,7 @@ mount_partitions() {
   fi
   mount_ro_ensure "system$SLOT app$SLOT" /system
   if [ -f /system/init -o -L /system/init ]; then
-    SYSTEM_ROOT=true
+    SYSTEM_AS_ROOT=true
     setup_mntpoint /system_root
     if ! mount --move /system /system_root; then
       umount /system
@@ -288,134 +307,70 @@ mount_partitions() {
     fi
     mount -o bind /system_root/system /system
   else
-    SYSTEM_ROOT=false
-    grep ' / ' /proc/mounts | grep -qv 'rootfs' || grep -q ' /system_root ' /proc/mounts && SYSTEM_ROOT=true
+    if grep ' / ' /proc/mounts | grep -qv 'rootfs' || grep -q ' /system_root ' /proc/mounts; then
+      SYSTEM_AS_ROOT=true
+    else
+      SYSTEM_AS_ROOT=false
+    fi
   fi
-  # /vendor is used only on some older devices for recovery AVBv1 signing so is not critical if fails
-  [ -L /system/vendor ] && mount_name vendor$SLOT /vendor '-o ro'
-  $SYSTEM_ROOT && ui_print "- Device is system-as-root"
-
-  # Allow /system/bin commands (dalvikvm) on Android 10+ in recovery
-  $BOOTMODE || mount_apex
-}
-
-# loop_setup <ext4_img>, sets LOOPDEV
-loop_setup() {
-  unset LOOPDEV
-  local LOOP
-  local MINORX=1
-  [ -e /dev/block/loop1 ] && MINORX=$(stat -Lc '%T' /dev/block/loop1)
-  local NUM=0
-  while [ $NUM -lt 64 ]; do
-    LOOP=/dev/block/loop$NUM
-    [ -e $LOOP ] || mknod $LOOP b 7 $((NUM * MINORX))
-    if losetup $LOOP "$1" 2>/dev/null; then
-      LOOPDEV=$LOOP
-      break
-    fi
-    NUM=$((NUM + 1))
-  done
-}
-
-mount_apex() {
-  $BOOTMODE || [ ! -d /system/apex ] && return
-  local APEX DEST
-  setup_mntpoint /apex
-  mount -t tmpfs tmpfs /apex -o mode=755
-  local PATTERN='s/.*"name":[^"]*"\([^"]*\).*/\1/p'
-  for APEX in /system/apex/*; do
-    if [ -f $APEX ]; then
-      # handle CAPEX APKs, extract actual APEX APK first
-      unzip -qo $APEX original_apex -d /apex
-      [ -f /apex/original_apex ] && APEX=/apex/original_apex # unzip doesn't do return codes
-      # APEX APKs, extract and loop mount
-      unzip -qo $APEX apex_payload.img -d /apex
-      DEST=$(unzip -qp $APEX apex_manifest.pb | strings | head -n 1 | tr -dc '[:alnum:].-_\n')
-      [ -z $DEST ] && DEST=$(unzip -qp $APEX apex_manifest.json | sed -n $PATTERN)
-      [ -z $DEST ] && continue
-      DEST=/apex/$DEST
-      mkdir -p $DEST
-      loop_setup /apex/apex_payload.img
-      if [ ! -z $LOOPDEV ]; then
-        ui_print "- Mounting $DEST"
-        mount -t ext4 -o ro,noatime $LOOPDEV $DEST
-      fi
-      rm -f /apex/original_apex /apex/apex_payload.img
-    elif [ -d $APEX ]; then
-      # APEX folders, bind mount directory
-      if [ -f $APEX/apex_manifest.json ]; then
-        DEST=/apex/$(sed -n $PATTERN $APEX/apex_manifest.json)
-      elif [ -f $APEX/apex_manifest.pb ]; then
-        DEST=/apex/$(strings $APEX/apex_manifest.pb | head -n 1 | tr -dc '[:alnum:].-_\n')
-      else
-        continue
-      fi
-      mkdir -p $DEST
-      ui_print "- Mounting $DEST"
-      mount -o bind $APEX $DEST
-    fi
-  done
-  export ANDROID_RUNTIME_ROOT=/apex/com.android.runtime
-  export ANDROID_TZDATA_ROOT=/apex/com.android.tzdata
-  export ANDROID_ART_ROOT=/apex/com.android.art
-  export ANDROID_I18N_ROOT=/apex/com.android.i18n
-  local APEXJARS=$(find /apex -name '*.jar' | sort | tr '\n' ':')
-  local FWK=/system/framework
-  export BOOTCLASSPATH=${APEXJARS}\
-$FWK/framework.jar:$FWK/ext.jar:$FWK/telephony-common.jar:\
-$FWK/voip-common.jar:$FWK/ims-common.jar:$FWK/telephony-ext.jar
-}
-
-umount_apex() {
-  [ -d /apex ] || return
-  umount -l /apex
-  for loop in /dev/block/loop*; do
-    losetup -d $loop 2>/dev/null
-  done
-  unset ANDROID_RUNTIME_ROOT
-  unset ANDROID_TZDATA_ROOT
-  unset ANDROID_ART_ROOT
-  unset ANDROID_I18N_ROOT
-  unset BOOTCLASSPATH
+  $SYSTEM_AS_ROOT && ui_print "- Device is system-as-root"
 }
 
 # After calling this method, the following variables will be set:
-# KEEPVERITY, KEEPFORCEENCRYPT, RECOVERYMODE, PATCHVBMETAFLAG,
-# ISENCRYPTED, VBMETAEXIST
+# ISENCRYPTED, PATCHVBMETAFLAG, LEGACYSAR,
+# KEEPVERITY, KEEPFORCEENCRYPT, RECOVERYMODE
 get_flags() {
+  if grep ' /data ' /proc/mounts | grep -q 'dm-'; then
+    ISENCRYPTED=true
+  elif [ "$(getprop ro.crypto.state)" = "encrypted" ]; then
+    ISENCRYPTED=true
+  elif [ "$DATA" = "false" ]; then
+    # No data access means unable to decrypt in recovery
+    ISENCRYPTED=true
+  else
+    ISENCRYPTED=false
+  fi
+  if [ -n "$(find_block vbmeta vbmeta_a)" ]; then
+    PATCHVBMETAFLAG=false
+  else
+    PATCHVBMETAFLAG=true
+    ui_print "- No vbmeta partition, patch vbmeta in boot image"
+  fi
+  LEGACYSAR=false
+  if $BOOTMODE; then
+    grep ' / ' /proc/mounts | grep -q '/dev/root' && LEGACYSAR=true
+  else
+    # Recovery mode, assume devices that don't use dynamic partitions are legacy SAR
+    local IS_DYNAMIC=false
+    if grep -q 'androidboot.super_partition' /proc/cmdline; then
+      IS_DYNAMIC=true
+    elif [ -n "$(find_block super)" ]; then
+      IS_DYNAMIC=true
+    fi
+    if $SYSTEM_AS_ROOT && ! $IS_DYNAMIC; then
+      LEGACYSAR=true
+      ui_print "- Legacy SAR, force kernel to load rootfs"
+    fi
+  fi
+
+  # Overridable config flags with safe defaults
   getvar KEEPVERITY
   getvar KEEPFORCEENCRYPT
   getvar RECOVERYMODE
-  getvar PATCHVBMETAFLAG
   if [ -z $KEEPVERITY ]; then
-    if $SYSTEM_ROOT; then
+    if $SYSTEM_AS_ROOT; then
       KEEPVERITY=true
-      ui_print "- System-as-root, keep dm/avb-verity"
+      ui_print "- System-as-root, keep dm-verity"
     else
       KEEPVERITY=false
     fi
   fi
-  ISENCRYPTED=false
-  grep ' /data ' /proc/mounts | grep -q 'dm-' && ISENCRYPTED=true
-  [ "$(getprop ro.crypto.state)" = "encrypted" ] && ISENCRYPTED=true
   if [ -z $KEEPFORCEENCRYPT ]; then
-    # No data access means unable to decrypt in recovery
-    if $ISENCRYPTED || ! $DATA; then
+    if $ISENCRYPTED; then
       KEEPFORCEENCRYPT=true
       ui_print "- Encrypted data, keep forceencrypt"
     else
       KEEPFORCEENCRYPT=false
-    fi
-  fi
-  VBMETAEXIST=false
-  local VBMETAIMG=$(find_block vbmeta vbmeta_a)
-  [ -n "$VBMETAIMG" ] && VBMETAEXIST=true
-  if [ -z $PATCHVBMETAFLAG ]; then
-    if $VBMETAEXIST; then
-      PATCHVBMETAFLAG=false
-    else
-      PATCHVBMETAFLAG=true
-      ui_print "- No vbmeta partition, patch vbmeta in boot image"
     fi
   fi
   [ -z $RECOVERYMODE ] && RECOVERYMODE=false
@@ -437,16 +392,11 @@ find_boot_image() {
 }
 
 flash_image() {
+  local CMD1
   case "$1" in
     *.gz) CMD1="gzip -d < '$1' 2>/dev/null";;
     *)    CMD1="cat '$1'";;
   esac
-  if $BOOTSIGNED; then
-    CMD2="$BOOTSIGNER -sign"
-    ui_print "- Sign image with verity keys"
-  else
-    CMD2="cat -"
-  fi
   if [ -b "$2" ]; then
     local img_sz=$(stat -c '%s' "$1")
     local blk_sz=$(blockdev --getsize64 "$2")
@@ -454,13 +404,13 @@ flash_image() {
     blockdev --setrw "$2"
     local blk_ro=$(blockdev --getro "$2")
     [ "$blk_ro" -eq 1 ] && return 2
-    eval "$CMD1" | eval "$CMD2" | cat - /dev/zero > "$2" 2>/dev/null
+    eval "$CMD1" | cat - /dev/zero > "$2" 2>/dev/null
   elif [ -c "$2" ]; then
     flash_eraseall "$2" >&2
-    eval "$CMD1" | eval "$CMD2" | nandwrite -p "$2" - >&2
+    eval "$CMD1" | nandwrite -p "$2" - >&2
   else
     ui_print "- Not block or char device, storing image"
-    eval "$CMD1" | eval "$CMD2" > "$2" 2>/dev/null
+    eval "$CMD1" > "$2" 2>/dev/null
   fi
   return 0
 }
@@ -468,11 +418,6 @@ flash_image() {
 # Common installation script for flash_script.sh and addon.d.sh
 install_magisk() {
   cd $MAGISKBIN
-
-  if [ ! -c $BOOTIMAGE ]; then
-    eval $BOOTSIGNER -verify < $BOOTIMAGE && BOOTSIGNED=true
-    $BOOTSIGNED && ui_print "- Boot image is signed with AVB 1.0"
-  fi
 
   # Source the boot patcher
   SOURCEDMODE=true
@@ -576,23 +521,9 @@ check_data() {
     $DATA && [ -d /data/adb ] && touch /data/adb/.rw && rm /data/adb/.rw && DATA_DE=true
     $DATA_DE && [ -d /data/adb/magisk ] || mkdir /data/adb/magisk || DATA_DE=false
   fi
-  NVBASE=/data
-  $DATA || NVBASE=/cache/data_adb
-  $DATA_DE && NVBASE=/data/adb
-  resolve_vars
-}
-
-find_magisk_apk() {
-  local DBAPK
-  [ -z $APK ] && APK=/data/app/com.topjohnwu.magisk*/base.apk
-  [ -f $APK ] || APK=/data/app/*/com.topjohnwu.magisk*/base.apk
-  if [ ! -f $APK ]; then
-    DBAPK=$(magisk --sqlite "SELECT value FROM strings WHERE key='requester'" 2>/dev/null | cut -d= -f2)
-    [ -z $DBAPK ] && DBAPK=$(strings $NVBASE/magisk.db | grep -oE 'requester..*' | cut -c10-)
-    [ -z $DBAPK ] || APK=/data/user_de/0/$DBAPK/dyn/current.apk
-    [ -f $APK ] || [ -z $DBAPK ] || APK=/data/data/$DBAPK/dyn/current.apk
-  fi
-  [ -f $APK ] || ui_print "! Unable to detect Magisk app APK for BootSigner"
+  set_nvbase "/data"
+  $DATA || set_nvbase "/cache/data_adb"
+  $DATA_DE && set_nvbase "/data/adb"
 }
 
 run_migrations() {
@@ -608,7 +539,7 @@ run_migrations() {
   # Legacy backup
   for gz in /data/stock_boot*.gz; do
     [ -f $gz ] || break
-    LOCSHA1=`basename $gz | sed -e 's/stock_boot_//' -e 's/.img.gz//'`
+    LOCSHA1=$(basename $gz | sed -e 's/stock_boot_//' -e 's/.img.gz//')
     [ -z $LOCSHA1 ] && break
     mkdir /data/magisk_backup_${LOCSHA1} 2>/dev/null
     mv $gz /data/magisk_backup_${LOCSHA1}/boot.img.gz
@@ -620,7 +551,7 @@ run_migrations() {
     BACKUP=$MAGISKBIN/stock_${name}.img
     [ -f $BACKUP ] || continue
     if [ $name = 'boot' ]; then
-      LOCSHA1=`$MAGISKBIN/magiskboot sha1 $BACKUP`
+      LOCSHA1=$($MAGISKBIN/magiskboot sha1 $BACKUP)
       mkdir /data/magisk_backup_${LOCSHA1} 2>/dev/null
     fi
     TARGET=/data/magisk_backup_${LOCSHA1}/${name}.img
@@ -681,14 +612,6 @@ mktouch() {
   chmod 644 $1
 }
 
-request_size_check() {
-  reqSizeM=`du -ms "$1" | cut -f1`
-}
-
-request_zip_size_check() {
-  reqSizeM=`unzip -l "$1" | tail -n 1 | awk '{ print int(($1 - 1) / 1048576 + 1) }'`
-}
-
 boot_actions() { return; }
 
 # Require ZIPFILE to be set
@@ -722,9 +645,9 @@ install_module() {
   local MODDIRNAME=modules
   $BOOTMODE && MODDIRNAME=modules_update
   local MODULEROOT=$NVBASE/$MODDIRNAME
-  MODID=`grep_prop id $TMPDIR/module.prop`
-  MODNAME=`grep_prop name $TMPDIR/module.prop`
-  MODAUTH=`grep_prop author $TMPDIR/module.prop`
+  MODID=$(grep_prop id $TMPDIR/module.prop)
+  MODNAME=$(grep_prop name $TMPDIR/module.prop)
+  MODAUTH=$(grep_prop author $TMPDIR/module.prop)
   MODPATH=$MODULEROOT/$MODID
 
   # Create mod paths
@@ -814,12 +737,5 @@ install_module() {
 [ -z $BOOTMODE ] && ps -A 2>/dev/null | grep zygote | grep -qv grep && BOOTMODE=true
 [ -z $BOOTMODE ] && BOOTMODE=false
 
-NVBASE=/data/adb
 TMPDIR=/dev/tmp
-
-# Bootsigner related stuff
-BOOTSIGNERCLASS=com.topjohnwu.magisk.signing.SignBoot
-BOOTSIGNER='/system/bin/dalvikvm -Xnoimage-dex2oat -cp $APK $BOOTSIGNERCLASS'
-BOOTSIGNED=false
-
-resolve_vars
+set_nvbase "/data/adb"

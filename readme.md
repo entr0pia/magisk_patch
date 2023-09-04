@@ -1,6 +1,6 @@
 # Magisk Boot Image Patcher
 
-Forked from [topjohnwu/Magisk:/scripts](https://github.com/topjohnwu/Magisk/tree/v26.1/scripts), Magisk v26.1
+Forked from [topjohnwu/Magisk:/scripts](https://github.com/topjohnwu/Magisk/tree/v26.3/scripts), Magisk v26.3
 
 
 ## Usage
