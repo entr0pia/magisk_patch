@@ -2,8 +2,8 @@
 # Magisk General Utility Functions
 ############################################
 
-MAGISK_VER='26.4'
-MAGISK_VER_CODE=26400
+MAGISK_VER='65207f96'
+MAGISK_VER_CODE=26404
 
 ###################
 # Global Variables
