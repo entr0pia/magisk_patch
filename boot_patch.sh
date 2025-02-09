@@ -18,8 +18,9 @@
 # util_functions.sh  script    A script which hosts all functions required
 #                              for this script to work properly.
 # magiskinit         binary    The binary to replace /init.
-# magisk(32/64)      binary    The magisk binaries.
+# magisk             binary    The magisk binary.
 # magiskboot         binary    A tool to manipulate boot images.
+# init-ld            binary    The library that will be LD_PRELOAD of /init
 # stub.apk           binary    The stub Magisk app to embed into ramdisk.
 # chromeos           folder    This folder includes the utility and keys to sign
 #                  (optional)  chromeos boot images. Only used for Pixel C.
@@ -118,14 +119,16 @@ else
   STATUS=0
   SKIP_BACKUP="#"
 fi
-case $((STATUS & 3)) in
-  0 )  # Stock boot
+case $STATUS in
+  0 )
+    # Stock boot
     ui_print "- Stock boot image detected"
     SHA1=$(./magiskboot sha1 "$BOOTIMAGE" 2>/dev/null)
     cat $BOOTIMAGE > stock_boot.img
     cp -af ramdisk.cpio ramdisk.cpio.orig 2>/dev/null
     ;;
-  1 )  # Magisk patched
+  1 )
+    # Magisk patched
     ui_print "- Magisk patched boot image detected"
     ./magiskboot cpio ramdisk.cpio \
     "extract .backup/.magisk config.orig" \
@@ -133,17 +136,12 @@ case $((STATUS & 3)) in
     cp -af ramdisk.cpio ramdisk.cpio.orig
     rm -f stock_boot.img
     ;;
-  2 )  # Unsupported
+  2 )
+    # Unsupported
     ui_print "! Boot image patched by unsupported programs"
     abort "! Please restore back to stock boot image"
     ;;
 esac
-
-# Workaround custom legacy Sony /init -> /(s)bin/init_sony : /init.real setup
-INIT=init
-if [ $((STATUS & 4)) -ne 0 ]; then
-  INIT=init.real
-fi
 
 if [ -f config.orig ]; then
   # Read existing configs
@@ -162,20 +160,12 @@ fi
 
 ui_print "- Patching ramdisk"
 
+$BOOTMODE && [ -z "$PREINITDEVICE" ] && PREINITDEVICE=$(./magisk --preinit-device)
+
 # Compress to save precious ramdisk space
-SKIP32="#"
-SKIP64="#"
-if [ -f magisk64 ]; then
-  $BOOTMODE && [ -z "$PREINITDEVICE" ] && PREINITDEVICE=$(./magisk64 --preinit-device)
-  ./magiskboot compress=xz magisk64 magisk64.xz
-  unset SKIP64
-fi
-if [ -f magisk32 ]; then
-  $BOOTMODE && [ -z "$PREINITDEVICE" ] && PREINITDEVICE=$(./magisk32 --preinit-device)
-  ./magiskboot compress=xz magisk32 magisk32.xz
-  unset SKIP32
-fi
+./magiskboot compress=xz magisk magisk.xz
 ./magiskboot compress=xz stub.apk stub.xz
+./magiskboot compress=xz init-ld init-ld.xz
 
 echo "KEEPVERITY=$KEEPVERITY" > config
 echo "KEEPFORCEENCRYPT=$KEEPFORCEENCRYPT" >> config
@@ -187,19 +177,19 @@ fi
 [ -n "$SHA1" ] && echo "SHA1=$SHA1" >> config
 
 ./magiskboot cpio ramdisk.cpio \
-"add 0750 $INIT magiskinit" \
+"add 0750 init magiskinit" \
 "mkdir 0750 overlay.d" \
 "mkdir 0750 overlay.d/sbin" \
-"$SKIP32 add 0644 overlay.d/sbin/magisk32.xz magisk32.xz" \
-"$SKIP64 add 0644 overlay.d/sbin/magisk64.xz magisk64.xz" \
+"add 0644 overlay.d/sbin/magisk.xz magisk.xz" \
 "add 0644 overlay.d/sbin/stub.xz stub.xz" \
+"add 0644 overlay.d/sbin/init-ld.xz init-ld.xz" \
 "patch" \
 "$SKIP_BACKUP backup ramdisk.cpio.orig" \
 "mkdir 000 .backup" \
 "add 000 .backup/.magisk config" \
 || abort "! Unable to patch ramdisk"
 
-rm -f ramdisk.cpio.orig config magisk*.xz stub.xz
+rm -f ramdisk.cpio.orig config *.xz
 
 #################
 # Binary Patches
@@ -229,6 +219,13 @@ if [ -f kernel ]; then
   # Before: [mov w2, #-221]   (-__NR_execve)
   # After:  [mov w2, #-32768]
   ./magiskboot hexpatch kernel 821B8012 E2FF8F12 && PATCHEDKERNEL=true
+
+  # Disable Samsung PROCA
+  # proca_config -> proca_magisk
+  ./magiskboot hexpatch kernel \
+  70726F63615F636F6E66696700 \
+  70726F63615F6D616769736B00 \
+  && PATCHEDKERNEL=true
 
   # Force kernel to load rootfs for legacy SAR devices
   # skip_initramfs -> want_initramfs

@@ -2,8 +2,8 @@
 # Magisk General Utility Functions
 ############################################
 
-MAGISK_VER='27.0'
-MAGISK_VER_CODE=27000
+MAGISK_VER='28.1'
+MAGISK_VER_CODE=28100
 
 ###################
 # Global Variables
@@ -14,10 +14,6 @@ MAGISK_VER_CODE=27000
 
 # The path to store temporary files that don't need to persist
 # TMPDIR=
-
-# The path to store files that can be persisted (non-volatile storage)
-# Any modification to this variable should go through the function `set_nvbase`
-# NVBASE=
 
 # The non-volatile path where magisk executables are stored
 # MAGISKBIN=
@@ -83,11 +79,6 @@ abort() {
   [ ! -z $MODPATH ] && rm -rf $MODPATH
   rm -rf $TMPDIR
   exit 1
-}
-
-set_nvbase() {
-  NVBASE="$1"
-  MAGISKBIN="$1/magisk"
 }
 
 print_title() {
@@ -217,7 +208,7 @@ find_block() {
   for BLOCK in "$@"; do
     DEVICE=$(find /dev/block \( -type b -o -type c -o -type l \) -iname $BLOCK | head -n 1) 2>/dev/null
     if [ ! -z $DEVICE ]; then
-      readlink -f $DEVICE
+      echo $DEVICE
       return 0
     fi
   done
@@ -236,7 +227,7 @@ find_block() {
   for DEV in "$@"; do
     DEVICE=$(find /dev \( -type b -o -type c -o -type l \) -maxdepth 1 -iname $DEV | head -n 1) 2>/dev/null
     if [ ! -z $DEVICE ]; then
-      readlink -f $DEVICE
+      echo $DEVICE
       return 0
     fi
   done
@@ -380,11 +371,20 @@ get_flags() {
 find_boot_image() {
   BOOTIMAGE=
   if $RECOVERYMODE; then
-    BOOTIMAGE=$(find_block "recovery_ramdisk$SLOT" "recovery$SLOT" "sos")
-  elif [ ! -z $SLOT ]; then
-    BOOTIMAGE=$(find_block "ramdisk$SLOT" "recovery_ramdisk$SLOT" "init_boot$SLOT" "boot$SLOT")
+    BOOTIMAGE=$(find_block "recovery$SLOT" "sos")
+  elif [ -e "/dev/block/by-name/init_boot$SLOT" ] && [ "$(uname -r | cut -d. -f1)" -ge 5 ] && uname -r | grep -Evq "android12-|^5\.4"; then
+    # init_boot is only used with GKI 13+. It is possible that some devices with init_boot
+    # partition still uses Android 12 GKI or previous kernels, so we need to explicitly detect that scenario.
+    BOOTIMAGE="/dev/block/by-name/init_boot$SLOT"
+  elif [ -e "/dev/block/by-name/boot$SLOT" ]; then
+    # Standard location since AOSP Android 10+
+    BOOTIMAGE="/dev/block/by-name/boot$SLOT"
+  elif [ -n "$SLOT" ]; then
+    # Fallback for A/B devices running < Android 10
+    BOOTIMAGE=$(find_block "ramdisk$SLOT" "boot$SLOT")
   else
-    BOOTIMAGE=$(find_block ramdisk recovery_ramdisk kern-a android_boot kernel bootimg init_boot boot lnx boot_a)
+    # Fallback for all legacy and non-standard devices
+    BOOTIMAGE=$(find_block ramdisk kern-a android_boot kernel bootimg boot lnx boot_a)
   fi
   if [ -z $BOOTIMAGE ]; then
     # Lets see what fstabs tells me
@@ -492,11 +492,7 @@ remove_system_su() {
 api_level_arch_detect() {
   API=$(grep_get_prop ro.build.version.sdk)
   ABI=$(grep_get_prop ro.product.cpu.abi)
-  if [ "$ABI" = "x86" ]; then
-    ARCH=x86
-    ABI32=x86
-    IS64BIT=false
-  elif [ "$ABI" = "arm64-v8a" ]; then
+  if [ "$ABI" = "arm64-v8a" ]; then
     ARCH=arm64
     ABI32=armeabi-v7a
     IS64BIT=true
@@ -504,11 +500,18 @@ api_level_arch_detect() {
     ARCH=x64
     ABI32=x86
     IS64BIT=true
-  else
+  elif [ "$ABI" = "armeabi-v7a" ]; then
     ARCH=arm
-    ABI=armeabi-v7a
     ABI32=armeabi-v7a
     IS64BIT=false
+  elif [ "$ABI" = "x86" ]; then
+    ARCH=x86
+    ABI32=x86
+    IS64BIT=false
+  elif [ "$ABI" = "riscv64" ]; then
+    ARCH=riscv64
+    ABI32=riscv32
+    IS64BIT=true
   fi
 }
 
@@ -522,13 +525,13 @@ check_data() {
     $DATA && [ -d /data/adb ] && touch /data/adb/.rw && rm /data/adb/.rw && DATA_DE=true
     $DATA_DE && [ -d /data/adb/magisk ] || mkdir /data/adb/magisk || DATA_DE=false
   fi
-  set_nvbase "/data"
-  $DATA || set_nvbase "/cache/data_adb"
-  $DATA_DE && set_nvbase "/data/adb"
+  MAGISKBIN="/data/magisk"
+  $DATA || MAGISKBIN="/cache/data_adb/magisk"
+  $DATA_DE && MAGISKBIN="/data/adb/magisk"
 }
 
 run_migrations() {
-  local LOCSHA1
+  local SHA1
   local TARGET
   # Legacy app installation
   local BACKUP=$MAGISKBIN/stock_boot*.gz
@@ -540,50 +543,48 @@ run_migrations() {
   # Legacy backup
   for gz in /data/stock_boot*.gz; do
     [ -f $gz ] || break
-    LOCSHA1=$(basename $gz | sed -e 's/stock_boot_//' -e 's/.img.gz//')
-    [ -z $LOCSHA1 ] && break
-    mkdir /data/magisk_backup_${LOCSHA1} 2>/dev/null
-    mv $gz /data/magisk_backup_${LOCSHA1}/boot.img.gz
+    SHA1=$(basename $gz | sed -e 's/stock_boot_//' -e 's/.img.gz//')
+    [ -z $SHA1 ] && break
+    mkdir /data/magisk_backup_${SHA1} 2>/dev/null
+    mv $gz /data/magisk_backup_${SHA1}/boot.img.gz
   done
 
   # Stock backups
-  LOCSHA1=$SHA1
+  SHA1=
   for name in boot dtb dtbo dtbs; do
     BACKUP=$MAGISKBIN/stock_${name}.img
     [ -f $BACKUP ] || continue
     if [ $name = 'boot' ]; then
-      LOCSHA1=$($MAGISKBIN/magiskboot sha1 $BACKUP)
-      mkdir /data/magisk_backup_${LOCSHA1} 2>/dev/null
+      SHA1=$($MAGISKBIN/magiskboot sha1 $BACKUP)
+      mkdir /data/magisk_backup_${SHA1} 2>/dev/null
     fi
-    TARGET=/data/magisk_backup_${LOCSHA1}/${name}.img
+    [ -z $SHA1 ] && break
+    TARGET=/data/magisk_backup_${SHA1}/${name}.img
     cp $BACKUP $TARGET
     rm -f $BACKUP
     gzip -9f $TARGET
   done
+
+  copy_preinit_files
 }
 
 copy_preinit_files() {
-  local PREINITDIR=$(magisk --path)/.magisk/preinit
-  if ! grep -q " $PREINITDIR " /proc/mounts; then
+  local PREINITDIR=$MAGISKTMP/.magisk/preinit
+  if [ ! -d $PREINITDIR ]; then
     ui_print "- Unable to find preinit dir"
     return 1
   fi
 
-  if ! grep -q "/adb/modules $PREINITDIR " /proc/self/mountinfo; then
-    rm -rf $PREINITDIR/*
-  fi
-
   # Copy all enabled sepolicy.rule
-  for r in $NVBASE/modules*/*/sepolicy.rule; do
+  for r in /data/adb/modules*/*/sepolicy.rule; do
     [ -f "$r" ] || continue
     local MODDIR=${r%/*}
     [ -f $MODDIR/disable ] && continue
     [ -f $MODDIR/remove ] && continue
     [ -f $MODDIR/update ] && continue
-    local MODNAME=${MODDIR##*/}
-    mkdir -p $PREINITDIR/$MODNAME
-    cp -f $r $PREINITDIR/$MODNAME/sepolicy.rule
-  done
+    cat $r
+    echo
+  done > $PREINITDIR/sepolicy.rule
 }
 
 #################
@@ -645,7 +646,7 @@ install_module() {
 
   local MODDIRNAME=modules
   $BOOTMODE && MODDIRNAME=modules_update
-  local MODULEROOT=$NVBASE/$MODDIRNAME
+  local MODULEROOT=/data/adb/$MODDIRNAME
   MODID=$(grep_prop id $TMPDIR/module.prop)
   MODNAME=$(grep_prop name $TMPDIR/module.prop)
   MODAUTH=$(grep_prop author $TMPDIR/module.prop)
@@ -704,10 +705,10 @@ install_module() {
 
   if $BOOTMODE; then
     # Update info for Magisk app
-    mktouch $NVBASE/modules/$MODID/update
-    rm -rf $NVBASE/modules/$MODID/remove 2>/dev/null
-    rm -rf $NVBASE/modules/$MODID/disable 2>/dev/null
-    cp -af $MODPATH/module.prop $NVBASE/modules/$MODID/module.prop
+    mktouch /data/adb/modules/$MODID/update
+    rm -rf /data/adb/modules/$MODID/remove 2>/dev/null
+    rm -rf /data/adb/modules/$MODID/disable 2>/dev/null
+    cp -af $MODPATH/module.prop /data/adb/modules/$MODID/module.prop
   fi
 
   # Copy over custom sepolicy rules
@@ -739,4 +740,4 @@ install_module() {
 [ -z $BOOTMODE ] && BOOTMODE=false
 
 TMPDIR=/dev/tmp
-set_nvbase "/data/adb"
+MAGISKBIN="/data/adb/magisk"

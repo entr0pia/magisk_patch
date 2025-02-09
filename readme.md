@@ -1,6 +1,6 @@
 # Magisk Boot Image Patcher
 
-Forked from [topjohnwu/Magisk:/scripts](https://github.com/topjohnwu/Magisk/tree/v27.0/scripts), Magisk v27.0
+Forked from [topjohnwu/Magisk:/scripts](https://github.com/topjohnwu/Magisk/tree/v28.1/scripts), Magisk v28.1
 
 
 ## Usage
@@ -24,7 +24,7 @@ boot_patch.sh <bootimage>
 | boot_patch.sh     | script | A script to patch boot image for Magisk. The script will use files in its same directory to complete the patching process. |
 | util_functions.sh | script | A script which hosts all functions required for this script to work properly.                                              |
 | magiskinit        | binary | The binary to replace /init.                                                                                               |
-| magisk(32/64)     | binary | The magisk binaries.                                                                                                       |
+| magisk(32)        | binary | The magisk binaries.                                                                                                       |
 | magiskboot        | binary | A tool to manipulate boot images.                                                                                          |
 | stub.apk          | binary | The stub Magisk app to embed into ramdisk.                                                                                 |
 | chromeos          | folder | This folder includes the utility and keys to sign chromeos boot images. Only used for Pixel C.                             |
